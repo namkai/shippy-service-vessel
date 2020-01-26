@@ -1,67 +1,53 @@
-// shippy-service-vessel/main.go
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
 	"github.com/micro/go-micro"
 	pb "github.com/namkai/shippy-service-vessel/proto/vessel"
+	"log"
+	"os"
 )
 
-type repository interface {
-	FindAvailable(ctx context.Context, in *pb.Specification) (*pb.Vessel, error)
-}
+const (
+	defaultHost = "datastore:27017"
+)
 
-type Repository struct {
-	vessels []*pb.Vessel
-}
-
-// FindAvailable - checks a specification against a map of vessels,
-// if capacity and max weight are below a vessels capacity and max weight,
-// then return that vessel.
-func (repo *Repository) FindAvailable(ctx context.Context, spec *pb.Specification) (*pb.Vessel, error) {
-	for _, vessel := range repo.vessels {
-		if spec.Capacity <= vessel.Capacity && spec.MaxWeight <= vessel.MaxWeight {
-			return vessel, nil
-		}
+func createDummyData(repo repository) {
+	vessels := []*Vessel{
+		{ID: "vessel001", Name: "Kane's Salty Secret", MaxWeight: 200000, Capacity: 500},
 	}
-	return nil, errors.New("No vessel found by that spec")
-}
-
-// Our grpc service handler
-type service struct {
-	repo repository
-}
-
-func (s *service) FindAvailable(ctx context.Context, req *pb.Specification, res *pb.Response) error {
-
-	// Find the next available vessel
-	vessel, err := s.repo.FindAvailable(ctx, req)
-	if err != nil {
-		return err
+	for _, v := range vessels {
+		repo.Create(context.Background(), v)
 	}
-
-	// Set the vessel as part of the response message type
-	res.Vessel = vessel
-	return nil
 }
 
 func main() {
-	vessels := []*pb.Vessel{
-		&pb.Vessel{Id: "vessel001", Name: "Boaty McBoatface", MaxWeight: 200000, Capacity: 500},
-	}
-	repo := &Repository{vessels}
-
 	srv := micro.NewService(
 		micro.Name("shippy.service.vessel"),
 	)
 
 	srv.Init()
 
+	uri := os.Getenv("DB_HOST")
+	if uri == "" {
+		uri = defaultHost
+	}
+	client, err := CreateClient(context.Background(), uri)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer client.Disconnect(context.TODO())
+
+	vesselCollection := client.Database("shippy").Collection("vessel")
+	repository := &VesselRepository{
+		vesselCollection,
+	}
+
+	createDummyData(repository)
+
 	// Register our implementation with
-	pb.RegisterVesselServiceHandler(srv.Server(), &service{repo})
+	pb.RegisterVesselServiceHandler(srv.Server(), &handler{repository})
 
 	if err := srv.Run(); err != nil {
 		fmt.Println(err)
